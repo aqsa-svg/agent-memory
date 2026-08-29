@@ -1,0 +1,51 @@
+# Optional. You do NOT need this to run the project.
+#
+# By default the oss backend runs Qdrant in "local mode": qdrant-client embeds
+# the engine in-process and writes to ./qdrant_data. No server, no Docker.
+#
+# The catch is that local mode takes an EXCLUSIVE FILE LOCK on that folder, so
+# exactly one process can use it at a time. Start a second chat.py while the
+# first is running and it fails with "already accessed by another instance".
+# That is fine for one terminal, and a wall the moment you want a web API, a
+# background worker, or two terminals at once.
+#
+# This compose file is the answer to that. Run a real Qdrant server and any
+# number of processes can share it.
+#
+#   docker compose up -d
+#
+# Then make ONE change in your .env:
+#
+#   QDRANT_HOST=localhost
+#
+# That is the whole switch. config.py sees a non-empty QDRANT_HOST and builds
+# the mem0 vector-store block with host/port instead of path, so nothing else
+# in the code changes.
+#
+# Note: memories already in ./qdrant_data do NOT migrate automatically. The
+# server starts with an empty collection. Either re-teach it, or copy the
+# folder into the volume below before first start.
+
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: agent-memory-qdrant
+    ports:
+      - "6333:6333"   # REST API - this is the one config.py talks to
+      - "6334:6334"   # gRPC, unused here but handy for other clients
+    volumes:
+      # Named volume so memories survive `docker compose down`. Use
+      # `docker compose down -v` to wipe them deliberately.
+      - qdrant_storage:/qdrant/storage
+    restart: unless-stopped
+    healthcheck:
+      # Qdrant images are distroless and ship no curl/wget, so probe the port
+      # with bash's /dev/tcp instead of adding a dependency.
+      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/6333' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  qdrant_storage:

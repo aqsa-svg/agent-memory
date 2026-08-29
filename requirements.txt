@@ -1,0 +1,40 @@
+# --- Memory layer -----------------------------------------------------------
+# mem0ai is the OSS library (pip install mem0ai). It is NOT the hosted
+# "MemoryClient" cloud API, which requires a paid key. We only ever import
+# `from mem0 import Memory`, the fully local class.
+#
+# PINNED, and the pin matters. mem0 2.x rewrote add() around an
+# "additive extraction" prompt whose stated rule is "Your sole operation is
+# ADD" - it never emits UPDATE or DELETE, so contradicting yourself silently
+# leaves both the old and new fact in the store. 0.1.118 is the last release
+# with the classic two-call extract-then-reconcile path that returns real
+# ADD / UPDATE / DELETE / NONE decisions. Do not bump this without re-reading
+# mem0/configs/prompts.py.
+mem0ai==0.1.118
+
+# --- Vector store -----------------------------------------------------------
+# qdrant-client in "local mode": pass a `path=` and it embeds the whole engine
+# in-process and writes to that folder. No Docker, no server, no network.
+qdrant-client>=1.9.0
+
+# --- Embeddings (free forever, runs on CPU) ---------------------------------
+# all-MiniLM-L6-v2 -> 384-dim vectors. Downloads ~90MB once, then offline.
+sentence-transformers>=3.0.0
+
+# --- LLM backends -----------------------------------------------------------
+# Gemini free tier: no credit card required. https://aistudio.google.com/apikey
+#
+# NOTE: this is google-genai, NOT the older google-generativeai package.
+# mem0ai 2.x imports `from google import genai` and raises ImportError on the
+# legacy SDK, which Google also stopped supporting in Nov 2025. Same free tier,
+# same API key, same zero cost - just the current client library.
+google-genai>=1.0.0
+# Ollama is optional (BACKEND=ollama) and speaks plain HTTP, so `requests` is
+# all we need for the reply call; mem0's ollama provider pulls its own client.
+requests>=2.31.0
+
+# --- Plumbing ---------------------------------------------------------------
+python-dotenv>=1.0.0
+# chat.py imports colorama directly to turn on ANSI handling in Windows
+# consoles. It arrives transitively anyway, but we import it, so we declare it.
+colorama>=0.4.6

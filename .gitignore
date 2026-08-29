@@ -1,0 +1,33 @@
+# Secrets - never commit. .env.example is the committed template.
+.env
+
+# Qdrant local mode writes the whole vector DB into this folder.
+qdrant_data/
+
+# mem0's SQLite audit log of every ADD/UPDATE/DELETE.
+mem0_history.db
+mem0_history.db-journal
+*.db-wal
+*.db-shm
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Hugging Face model cache, if you ever point it at the project dir
+.cache/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# pytest
+.pytest_cache/
