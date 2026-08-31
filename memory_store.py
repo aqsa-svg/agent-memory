@@ -474,6 +474,15 @@ def _diagnose(exc: Exception, settings: Settings) -> str:
             f"  - set QDRANT_COLLECTION to a new name in .env.\n\nOriginal error: {blob}"
         )
 
+    if "sentence_transformers" in lowered or "sentence-transformers" in lowered:
+        return (
+            "Local embeddings need sentence-transformers, which is not installed.\n"
+            "  - pip install -r requirements-local.txt   (adds torch, ~1GB), or\n"
+            "  - set EMBEDDER_PROVIDER=gemini to embed through the API instead "
+            "(no download).\n\n"
+            f"Original error: {blob}"
+        )
+
     if "api_key" in lowered or "api key" in lowered or "unauthenticated" in lowered:
         return f"The LLM rejected the credentials while building the memory store.\n\n{blob}"
 

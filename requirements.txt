@@ -17,9 +17,17 @@ mem0ai==0.1.118
 # in-process and writes to that folder. No Docker, no server, no network.
 qdrant-client>=1.9.0
 
-# --- Embeddings (free forever, runs on CPU) ---------------------------------
-# all-MiniLM-L6-v2 -> 384-dim vectors. Downloads ~90MB once, then offline.
-sentence-transformers>=3.0.0
+# --- Embeddings -------------------------------------------------------------
+# NOT listed here on purpose. Local CPU embeddings need sentence-transformers,
+# which drags in torch (~1GB) and is only used when you run
+# EMBEDDER_PROVIDER=huggingface. That combination is worth it locally and
+# ruinous in a serverless function, so it lives in requirements-local.txt:
+#
+#     pip install -r requirements-local.txt   # local, fully offline embeddings
+#     pip install -r requirements.txt         # everything else, incl. deploys
+#
+# With EMBEDDER_PROVIDER=gemini the embeddings come from the same free API key
+# used for replies, and nothing is downloaded.
 
 # --- LLM backends -----------------------------------------------------------
 # Gemini free tier: no credit card required. https://aistudio.google.com/apikey
@@ -32,6 +40,12 @@ google-genai>=1.0.0
 # Ollama is optional (BACKEND=ollama) and speaks plain HTTP, so `requests` is
 # all we need for the reply call; mem0's ollama provider pulls its own client.
 requests>=2.31.0
+
+# --- Web front end (server.py + index.html) ---------------------------------
+# Only needed for `python server.py`. The terminal front end (chat.py) does not
+# import these.
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
 
 # --- Plumbing ---------------------------------------------------------------
 python-dotenv>=1.0.0

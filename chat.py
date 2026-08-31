@@ -22,6 +22,7 @@ import argparse
 import sys
 
 from config import ConfigError, get_settings
+import agent
 import llm
 import memory_store
 from memory_store import (
@@ -268,28 +269,20 @@ def main() -> int:
             continue
 
         try:
-            # 1. semantic search over what we already know
-            memories = memory_store.recall(user_message, user_id=user_id)
-            console.show_recall(memories)
+            # The four-step cycle lives in agent.run_turn so this loop and the
+            # web UI cannot drift apart. on_recall fires between the search and
+            # the LLM call, which preserves the terminal's ordering: recalled
+            # memories appear while the model is still thinking.
+            turn = agent.run_turn(
+                user_message,
+                user_id=user_id,
+                history=history,
+                settings=settings,
+                on_recall=console.show_recall,
+            )
 
-            # 2. inject those memories into the system prompt
-            system_prompt = llm.build_system_prompt(memories)
-
-            # 3. ask the LLM. history holds user/assistant turns only; the
-            #    system prompt is passed out-of-band and never joins it.
-            history.append({"role": "user", "content": user_message})
-            reply = llm.generate_reply(system_prompt, history, settings)
-            history.append({"role": "assistant", "content": reply})
-            # Keep the window small: memory is the long-term store, not this.
-            history[:] = history[-8:]
-
-            print(f"\n{CYAN}agent>{RESET} {reply}\n")
-
-            # 4. write the exchange back. ONLY the two message strings - the
-            #    system prompt must not go in, or the memories we just recalled
-            #    would be re-extracted and stored again as duplicates.
-            ops = memory_store.remember(user_message, reply, user_id=user_id)
-            console.show_ops(ops)
+            print(f"\n{CYAN}agent>{RESET} {turn.reply}\n")
+            console.show_ops(turn.ops)
 
         except QuotaExhausted as exc:
             print(f"\n{YELLOW}{exc}{RESET}\n")

@@ -41,6 +41,19 @@ MemoryBackend = Literal["cloud", "oss"]
 # OpenAI-based tutorial to a local embedder.
 EMBEDDING_DIMS = 384
 
+# Gemini's text-embedding-004 returns 768-dim vectors. Used for deployments,
+# where shipping torch + a 90MB model into a serverless function is not worth
+# it: the API call is free on the same key and starts instantly.
+GEMINI_EMBEDDING_DIMS = 768
+
+# A Qdrant collection's vector size is fixed at creation, so the two embedders
+# cannot share one. Switching EMBEDDER_PROVIDER means switching
+# QDRANT_COLLECTION too, or every insert fails.
+EMBEDDER_DEFAULTS = {
+    "huggingface": ("sentence-transformers/all-MiniLM-L6-v2", EMBEDDING_DIMS),
+    "gemini": ("models/text-embedding-004", GEMINI_EMBEDDING_DIMS),
+}
+
 
 class ConfigError(RuntimeError):
     """Raised for missing/invalid configuration, carrying a human-readable fix."""
@@ -117,6 +130,11 @@ class Settings:
 
     # --- vector store ---
     qdrant_collection: str = "agent_memory"
+    # Qdrant Cloud: a full https URL plus a key. Takes precedence over both
+    # local mode and host/port, because a managed cluster is the only one of
+    # the three that survives a serverless function being torn down.
+    qdrant_url: str = ""
+    qdrant_api_key: str = ""
     qdrant_path: Path = field(default_factory=lambda: PROJECT_ROOT / "qdrant_data")
     # Set QDRANT_HOST to switch from embedded-file mode to a real server
     # (see docker-compose.yml). Empty string means local mode.
@@ -139,15 +157,24 @@ class Settings:
 
     @property
     def local_qdrant(self) -> bool:
-        return not self.qdrant_host
+        return not self.qdrant_host and not self.qdrant_url
+
+    @property
+    def uses_local_embedder(self) -> bool:
+        """True only when we must import torch and sentence-transformers.
+
+        Distinct from uses_local_memory: the oss memory backend can run its
+        embeddings through an API instead, which is what makes a small,
+        fast-starting deployment possible.
+        """
+        return self.memory_backend == "oss" and self.embedder_provider == "huggingface"
 
     @property
     def uses_local_memory(self) -> bool:
         """True when we must load sentence-transformers and open Qdrant.
 
-        Gate every import of those on this. In cloud mode they are dead weight:
-        a ~90MB model download and several seconds of torch startup for a code
-        path that never runs.
+        Gate the vector-store configuration on this. For whether torch itself
+        is needed, see uses_local_embedder.
         """
         return self.memory_backend == "oss"
 
@@ -172,6 +199,14 @@ def get_settings() -> Settings:
             f"Check your .env."
         )
 
+    embedder_provider = _env_str("EMBEDDER_PROVIDER", "huggingface").lower()
+    if embedder_provider not in EMBEDDER_DEFAULTS:
+        raise ConfigError(
+            f"EMBEDDER_PROVIDER must be one of {sorted(EMBEDDER_DEFAULTS)}, "
+            f"got {embedder_provider!r}."
+        )
+    default_embed_model, default_embed_dims = EMBEDDER_DEFAULTS[embedder_provider]
+
     return Settings(
         memory_backend=memory_backend,  # type: ignore[arg-type]
         mem0_api_key=_env_str("MEM0_API_KEY", ""),
@@ -183,11 +218,12 @@ def get_settings() -> Settings:
         gemini_api_key=_env_str("GEMINI_API_KEY", "") or _env_str("GOOGLE_API_KEY", ""),
         ollama_model=_env_str("OLLAMA_MODEL", "llama3.1:8b"),
         ollama_base_url=_env_str("OLLAMA_BASE_URL", "http://localhost:11434"),
-        embedding_model=_env_str(
-            "EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2"
-        ),
-        embedding_dims=_env_int("EMBEDDING_DIMS", EMBEDDING_DIMS),
+        embedder_provider=embedder_provider,
+        embedding_model=_env_str("EMBEDDING_MODEL", default_embed_model),
+        embedding_dims=_env_int("EMBEDDING_DIMS", default_embed_dims),
         qdrant_collection=_env_str("QDRANT_COLLECTION", "agent_memory"),
+        qdrant_url=_env_str("QDRANT_URL", ""),
+        qdrant_api_key=_env_str("QDRANT_API_KEY", ""),
         qdrant_path=_env_path("QDRANT_PATH", PROJECT_ROOT / "qdrant_data"),
         qdrant_host=_env_str("QDRANT_HOST", ""),
         qdrant_port=_env_int("QDRANT_PORT", 6333),
@@ -247,15 +283,47 @@ def validate(settings: Settings) -> None:
     if not settings.uses_local_memory:
         return
 
-    # Guard the single most likely setup mistake in this whole project.
-    if (
-        settings.embedding_dims != EMBEDDING_DIMS
-        and "MiniLM-L6" in settings.embedding_model
-    ):
+    # Guard the single most likely setup mistake in this whole project: a
+    # declared vector size that does not match what the embedder emits.
+    expected = None
+    if "MiniLM-L6" in settings.embedding_model:
+        expected = EMBEDDING_DIMS
+    elif "text-embedding-004" in settings.embedding_model:
+        expected = GEMINI_EMBEDDING_DIMS
+    if expected is not None and settings.embedding_dims != expected:
         raise ConfigError(
             f"EMBEDDING_DIMS={settings.embedding_dims} but {settings.embedding_model} "
-            f"produces {EMBEDDING_DIMS}-dim vectors, so every Qdrant insert would "
-            f"fail. Remove EMBEDDING_DIMS from .env to use the default."
+            f"produces {expected}-dim vectors, so every Qdrant insert would fail. "
+            f"Remove EMBEDDING_DIMS from .env to use the default."
+        )
+
+    # An explicit EMBEDDING_MODEL in .env silently outlives a provider switch,
+    # producing a Gemini client asked for a sentence-transformers checkpoint.
+    # Fail loudly rather than at the first embed call.
+    if settings.embedder_provider == "gemini" and "sentence-transformers" in settings.embedding_model:
+        raise ConfigError(
+            f"EMBEDDER_PROVIDER=gemini but EMBEDDING_MODEL is "
+            f"{settings.embedding_model!r}, which is a local checkpoint.\n"
+            f"  Set EMBEDDING_MODEL=models/text-embedding-004 and "
+            f"EMBEDDING_DIMS={GEMINI_EMBEDDING_DIMS}, or remove both to use the "
+            f"provider default."
+        )
+    if settings.embedder_provider == "huggingface" and settings.embedding_model.startswith("models/"):
+        raise ConfigError(
+            f"EMBEDDER_PROVIDER=huggingface but EMBEDDING_MODEL is "
+            f"{settings.embedding_model!r}, which is a Gemini model name."
+        )
+
+    if settings.embedder_provider == "gemini" and not settings.gemini_api_key:
+        raise ConfigError(
+            "EMBEDDER_PROVIDER=gemini needs GEMINI_API_KEY, which embeds through "
+            "the same free key used for replies."
+        )
+
+    if settings.qdrant_url and not settings.qdrant_api_key:
+        raise ConfigError(
+            "QDRANT_URL is set but QDRANT_API_KEY is empty. Qdrant Cloud clusters "
+            "reject unauthenticated requests."
         )
 
 
@@ -284,12 +352,29 @@ def _llm_block(settings: Settings) -> dict[str, Any]:
     }
 
 
+def _embedder_config(settings: Settings) -> dict[str, Any]:
+    config: dict[str, Any] = {
+        "model": settings.embedding_model,
+        "embedding_dims": settings.embedding_dims,
+    }
+    if settings.embedder_provider == "gemini":
+        # mem0 would otherwise fall back to GOOGLE_API_KEY from the ambient
+        # environment, which may be a different key than the one we resolved.
+        config["api_key"] = settings.gemini_api_key
+    return config
+
+
 def _vector_store_block(settings: Settings) -> dict[str, Any]:
     base: dict[str, Any] = {
         "collection_name": settings.qdrant_collection,
         "embedding_model_dims": settings.embedding_dims,
     }
-    if settings.local_qdrant:
+    if settings.qdrant_url:
+        # A managed cluster. Unlike local mode there is no file lock, so many
+        # processes (or serverless invocations) can share it.
+        base["url"] = settings.qdrant_url
+        base["api_key"] = settings.qdrant_api_key
+    elif settings.local_qdrant:
         # `path` is what makes qdrant-client run embedded, in-process. It takes
         # an exclusive file lock on the folder: one process at a time.
         base["path"] = str(settings.qdrant_path)
@@ -323,10 +408,7 @@ def mem0_config(settings: Settings | None = None) -> dict[str, Any]:
         "llm": _llm_block(settings),
         "embedder": {
             "provider": settings.embedder_provider,
-            "config": {
-                "model": settings.embedding_model,
-                "embedding_dims": settings.embedding_dims,
-            },
+            "config": _embedder_config(settings),
         },
         "history_db_path": str(settings.history_db_path),
         # v1.1 returns memory operations as a dict with a "results" key. v1.0 is

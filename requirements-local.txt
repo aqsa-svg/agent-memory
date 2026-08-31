@@ -1,0 +1,11 @@
+# Local development with fully offline embeddings.
+#
+#     pip install -r requirements-local.txt
+#
+# Adds sentence-transformers (and therefore torch, ~1GB) on top of the core
+# dependencies. Needed only for EMBEDDER_PROVIDER=huggingface, which is the
+# default when MEMORY_BACKEND=oss.
+-r requirements.txt
+
+# all-MiniLM-L6-v2 -> 384-dim vectors. Downloads ~90MB once, then runs offline.
+sentence-transformers>=3.0.0

@@ -1,0 +1,759 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>agent-memory</title>
+<style>
+/* ---------------------------------------------------------------------------
+   Colour and metrics. Every colour in the file is defined here and referenced
+   as a variable; no rule below contains a literal colour value.
+
+   The palette is one neutral surface ramp plus a single accent used only for
+   user messages. Three semantic colours exist and are each used in exactly one
+   place: amber for UPDATE, red for DELETE, green for the connected dot.
+--------------------------------------------------------------------------- */
+:root {
+  --bg:            #fbfbfa;
+  --surface:       #ffffff;
+  --surface-sunk:  #f5f5f4;
+  --border:        #e0dfdc;
+  --border-strong: #cfceca;
+
+  --text:          #26251f;
+  --text-secondary:#5f5e57;
+  --text-muted:    #8f8e86;
+
+  --accent-bg:     #eceaf6;
+  --accent-border: #dcd8ee;
+
+  --update:        #9a6a12;
+  --delete:        #a1382e;
+  --online:        #3f8f5e;
+
+  --focus:         #b9b4d8;
+
+  --hairline: 0.5px;
+  --radius-card: 12px;
+  --radius-control: 8px;
+  --sidebar-w: 292px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg:            #16161a;
+    --surface:       #1d1d22;
+    --surface-sunk:  #232329;
+    --border:        #2e2e35;
+    --border-strong: #3d3d45;
+
+    --text:          #e8e7e3;
+    --text-secondary:#a5a49d;
+    --text-muted:    #74736d;
+
+    --accent-bg:     #2a2740;
+    --accent-border: #383353;
+
+    --update:        #d2a244;
+    --delete:        #d97a6c;
+    --online:        #5cb17f;
+
+    --focus:         #5a5480;
+  }
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: ui-sans-serif, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.7;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* --------------------------------------------------------------------- header */
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 22px;
+  border-bottom: var(--hairline) solid var(--border);
+  background: var(--surface);
+  position: sticky;
+  top: 0;
+  z-index: 20;
+}
+
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text-muted);
+  flex: none;
+}
+.dot.online { background: var(--online); }
+
+.brand {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+
+.backend {
+  font-size: 12px;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.header-spacer { flex: 1; }
+
+/* --------------------------------------------------------------------- layout */
+
+main {
+  display: grid;
+  grid-template-columns: 1fr var(--sidebar-w);
+  height: calc(100% - 53px);
+}
+
+.chat {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+}
+
+#messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 28px 22px 8px;
+}
+
+.thread {
+  max-width: 680px;
+  margin: 0 auto;
+}
+
+/* ------------------------------------------------------------------ messages */
+
+.turn { margin-bottom: 26px; }
+
+/* User: right-aligned, tinted, in a bubble. */
+.msg-user {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 20px;
+}
+.msg-user .bubble {
+  background: var(--accent-bg);
+  border: var(--hairline) solid var(--accent-border);
+  border-radius: var(--radius-card);
+  padding: 9px 14px;
+  max-width: 78%;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+/* Agent: plain left-aligned text, no bubble, so long replies stay readable. */
+.msg-agent {
+  white-space: pre-wrap;
+  word-wrap: break-word;
+}
+
+.empty {
+  color: var(--text-muted);
+  font-size: 13px;
+  text-align: center;
+  padding: 48px 0;
+}
+
+/* ---------------------------------------------------------------- debug drawer */
+
+.drawer {
+  margin-top: 14px;
+  border: var(--hairline) solid var(--border);
+  border-radius: var(--radius-card);
+  background: var(--surface);
+  font-size: 12px;
+}
+
+.drawer > summary {
+  cursor: pointer;
+  padding: 7px 12px;
+  color: var(--text-muted);
+  list-style: none;
+  user-select: none;
+  border-radius: var(--radius-card);
+}
+.drawer > summary::-webkit-details-marker { display: none; }
+.drawer > summary:hover { color: var(--text-secondary); }
+.drawer[open] > summary {
+  border-bottom: var(--hairline) solid var(--border);
+  border-radius: var(--radius-card) var(--radius-card) 0 0;
+}
+.drawer > summary::before {
+  content: "›";
+  display: inline-block;
+  margin-right: 7px;
+  transition: transform 120ms ease;
+}
+.drawer[open] > summary::before { transform: rotate(90deg); }
+
+.drawer-body { padding: 10px 12px 12px; }
+
+.drawer-label {
+  font-size: 11px;
+  text-transform: lowercase;
+  letter-spacing: 0.03em;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+}
+.drawer-body .drawer-label + .drawer-label,
+.drawer-section + .drawer-section { margin-top: 12px; }
+
+.recall-row {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  padding: 2px 0;
+  color: var(--text-secondary);
+}
+.score {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+  color: var(--text-muted);
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.op-row {
+  padding: 3px 0;
+  color: var(--text-secondary);
+}
+
+.badge {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  margin-right: 8px;
+  color: var(--text-muted);
+}
+.badge.update { color: var(--update); }
+.badge.delete { color: var(--delete); }
+
+/* The point of the whole drawer: a superseded fact, struck through and dimmed,
+   sitting directly above what replaced it. */
+.was {
+  color: var(--text-muted);
+  text-decoration: line-through;
+  display: block;
+}
+.now { color: var(--text-secondary); display: block; }
+
+.pending {
+  color: var(--text-muted);
+  font-style: normal;
+}
+
+/* -------------------------------------------------------------------- composer */
+
+.composer {
+  border-top: var(--hairline) solid var(--border);
+  padding: 14px 22px 18px;
+  background: var(--bg);
+}
+.composer-inner {
+  max-width: 680px;
+  margin: 0 auto;
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+}
+
+textarea {
+  flex: 1;
+  resize: none;
+  font: inherit;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--surface);
+  border: var(--hairline) solid var(--border-strong);
+  border-radius: var(--radius-control);
+  padding: 9px 12px;
+  max-height: 180px;
+  min-height: 40px;
+}
+textarea:focus { outline: 2px solid var(--focus); outline-offset: -1px; }
+textarea::placeholder { color: var(--text-muted); }
+
+button {
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--surface);
+  border: var(--hairline) solid var(--border-strong);
+  border-radius: var(--radius-control);
+  padding: 9px 15px;
+  cursor: pointer;
+  height: 40px;
+  flex: none;
+}
+button:hover:not(:disabled) { background: var(--surface-sunk); }
+button:disabled { color: var(--text-muted); cursor: default; }
+button:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+
+/* A quiet spinner: three dots breathing, in muted text colour. */
+.thinking { display: flex; gap: 4px; padding: 4px 0 2px; }
+.thinking i {
+  width: 4px; height: 4px; border-radius: 50%;
+  background: var(--text-muted);
+  animation: breathe 1.3s ease-in-out infinite;
+}
+.thinking i:nth-child(2) { animation-delay: 0.16s; }
+.thinking i:nth-child(3) { animation-delay: 0.32s; }
+@keyframes breathe {
+  0%, 60%, 100% { opacity: 0.25; }
+  30%           { opacity: 0.85; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .thinking i { animation: none; opacity: 0.5; }
+  .drawer > summary::before { transition: none; }
+}
+
+/* --------------------------------------------------------------------- sidebar */
+
+.sidebar {
+  border-left: var(--hairline) solid var(--border);
+  background: var(--surface);
+  padding: 20px 18px;
+  overflow-y: auto;
+  min-width: 0;
+}
+
+.side-title {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  margin-bottom: 10px;
+}
+
+.field { margin-bottom: 22px; }
+.field input {
+  width: 100%;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--bg);
+  border: var(--hairline) solid var(--border-strong);
+  border-radius: var(--radius-control);
+  padding: 7px 10px;
+}
+.field input:focus { outline: 2px solid var(--focus); outline-offset: -1px; }
+
+.memory-item {
+  font-size: 13px;
+  color: var(--text-secondary);
+  padding: 8px 0;
+  border-bottom: var(--hairline) solid var(--border);
+}
+.memory-item:last-child { border-bottom: none; }
+.memory-date { font-size: 11px; color: var(--text-muted); }
+
+.side-empty { font-size: 12px; color: var(--text-muted); }
+
+.demo-note {
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--text-muted);
+  margin: 0 0 20px;
+}
+
+.side-actions { margin-top: 18px; }
+.side-actions button { width: 100%; height: 34px; padding: 0 12px; }
+.side-actions button.armed { color: var(--delete); border-color: var(--delete); }
+
+/* Header controls that only exist on narrow screens. */
+.drawer-toggle { display: none; }
+
+/* ---------------------------------------------------------------- narrow screens */
+
+@media (max-width: 800px) {
+  main { grid-template-columns: 1fr; }
+
+  .drawer-toggle {
+    display: inline-block;
+    height: 30px;
+    padding: 0 11px;
+    font-size: 12px;
+  }
+
+  .sidebar {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: min(88vw, var(--sidebar-w));
+    z-index: 40;
+    transform: translateX(100%);
+    transition: transform 180ms ease;
+    padding-top: 18px;
+  }
+  .sidebar.open { transform: translateX(0); }
+
+  .scrim {
+    position: fixed;
+    inset: 0;
+    background: var(--text);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 180ms ease;
+    z-index: 30;
+  }
+  .scrim.open { opacity: 0.18; pointer-events: auto; }
+
+  @media (prefers-reduced-motion: reduce) {
+    .sidebar, .scrim { transition: none; }
+  }
+}
+</style>
+</head>
+<body>
+
+<header>
+  <span class="dot" id="dot" aria-hidden="true"></span>
+  <span class="brand">agent-memory</span>
+  <span class="backend" id="backend">connecting…</span>
+  <span class="header-spacer"></span>
+  <button class="drawer-toggle" id="drawer-toggle" aria-expanded="false">Memories</button>
+</header>
+
+<main>
+  <section class="chat">
+    <div id="messages">
+      <div class="thread" id="thread">
+        <p class="empty" id="empty">Tell it something about yourself, then reload the page and ask about it.</p>
+      </div>
+    </div>
+
+    <div class="composer">
+      <div class="composer-inner">
+        <textarea id="input" rows="1" placeholder="Send a message" autofocus></textarea>
+        <button id="send">Send</button>
+      </div>
+    </div>
+  </section>
+
+  <aside class="sidebar" id="sidebar">
+    <div class="field" id="user-field">
+      <div class="side-title">You are</div>
+      <input id="user" value="you" spellcheck="false" autocomplete="off">
+    </div>
+
+    <p class="demo-note" id="demo-note" hidden>
+      This is a shared demo on a free tier, so it is rate limited. Your memories
+      are private to this browser and are not visible to anyone else.
+    </p>
+
+    <div class="side-title">Stored memories</div>
+    <div id="memories"><div class="side-empty">Nothing stored yet.</div></div>
+
+    <div class="side-actions">
+      <button id="forget">Forget everything</button>
+    </div>
+  </aside>
+</main>
+
+<div class="scrim" id="scrim"></div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const thread = $('thread');
+
+let busy = false;
+let demoMode = false;
+let visitorId = null;
+
+// In demo mode the scope is a server-issued token the visitor cannot choose,
+// which is what stops one visitor reading another's memories. Locally it is
+// just whatever you typed in the sidebar.
+const userId = () =>
+  demoMode ? visitorId : ($('user').value || 'you').trim().toLowerCase();
+
+// Remember who you were across reloads, so memories stay attached to the same
+// user without retyping. Wrapped because private-mode browsers throw on access.
+try {
+  const saved = localStorage.getItem('agent-memory-user');
+  if (saved) $('user').value = saved;
+} catch (_) {}
+
+function el(tag, cls, text) {
+  const n = document.createElement(tag);
+  if (cls) n.className = cls;
+  if (text !== undefined) n.textContent = text;
+  return n;
+}
+
+/* ------------------------------------------------------------------ rendering */
+
+function addUser(text) {
+  $('empty')?.remove();
+  const turn = el('div', 'turn');
+  const row = el('div', 'msg-user');
+  row.appendChild(el('div', 'bubble', text));
+  turn.appendChild(row);
+  thread.appendChild(turn);
+  scroll();
+  return turn;
+}
+
+function addThinking(turn) {
+  const wrap = el('div', 'thinking');
+  wrap.append(el('i'), el('i'), el('i'));
+  turn.appendChild(wrap);
+  scroll();
+  return wrap;
+}
+
+function buildDrawer(data) {
+  const d = el('details', 'drawer');
+  d.appendChild(el('summary', null, data.summary || 'turn details'));
+
+  const body = el('div', 'drawer-body');
+
+  const recalled = data.recalled || [];
+  const section1 = el('div', 'drawer-section');
+  section1.appendChild(el('div', 'drawer-label', 'recalled'));
+  if (!recalled.length) {
+    section1.appendChild(el('div', 'op-row', 'nothing relevant stored yet'));
+  } else {
+    for (const m of recalled) {
+      const row = el('div', 'recall-row');
+      const score = m.score === null || m.score === undefined
+        ? '  –  ' : Number(m.score).toFixed(3);
+      row.appendChild(el('span', 'score', score));
+      row.appendChild(el('span', null, m.text));
+      section1.appendChild(row);
+    }
+  }
+  body.appendChild(section1);
+
+  const ops = data.ops || [];
+  const section2 = el('div', 'drawer-section');
+  section2.appendChild(el('div', 'drawer-label', 'memory'));
+
+  if (!ops.length) {
+    section2.appendChild(el('div', 'op-row', 'no changes — nothing durable in that exchange'));
+  }
+
+  for (const op of ops) {
+    const row = el('div', 'op-row');
+
+    if (op.event === 'PENDING') {
+      // A queued cloud write is not an error, so it must not look like one.
+      row.appendChild(el('span', 'pending', 'still saving — this memory may appear shortly'));
+      section2.appendChild(row);
+      continue;
+    }
+
+    const badge = el('span', 'badge ' + op.event.toLowerCase(), op.event.toLowerCase());
+    row.appendChild(badge);
+
+    if (op.event === 'UPDATE' && op.previous) {
+      const stack = el('span');
+      stack.appendChild(el('span', 'was', op.previous));
+      stack.appendChild(el('span', 'now', op.text));
+      row.appendChild(stack);
+    } else {
+      row.appendChild(el('span', null, op.text));
+    }
+    section2.appendChild(row);
+  }
+  body.appendChild(section2);
+
+  d.appendChild(body);
+  return d;
+}
+
+function scroll() {
+  const box = $('messages');
+  box.scrollTop = box.scrollHeight;
+}
+
+/* --------------------------------------------------------------------- actions */
+
+async function send() {
+  const input = $('input');
+  const text = input.value.trim();
+  if (!text || busy) return;
+
+  busy = true;
+  $('send').disabled = true;
+  input.value = '';
+  input.style.height = 'auto';
+
+  const turn = addUser(text);
+  const thinking = addThinking(turn);
+
+  try {
+    const res = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: userId(), message: text }),
+    });
+    const data = await res.json();
+    thinking.remove();
+
+    if (!res.ok) {
+      turn.appendChild(el('div', 'msg-agent', data.detail || 'Something went wrong.'));
+    } else {
+      turn.appendChild(el('div', 'msg-agent', data.reply));
+      turn.appendChild(buildDrawer(data));
+      loadMemories();
+    }
+  } catch (err) {
+    thinking.remove();
+    turn.appendChild(el('div', 'msg-agent', 'Could not reach the server. Is it still running?'));
+  } finally {
+    busy = false;
+    $('send').disabled = false;
+    scroll();
+    input.focus();
+  }
+}
+
+async function loadMemories() {
+  const box = $('memories');
+  try {
+    const res = await fetch('/api/memories?user_id=' + encodeURIComponent(userId()));
+    const data = await res.json();
+    const items = data.memories || [];
+    box.textContent = '';
+    if (!items.length) {
+      box.appendChild(el('div', 'side-empty', 'Nothing stored yet.'));
+      return;
+    }
+    for (const m of items) {
+      const item = el('div', 'memory-item');
+      item.appendChild(el('div', null, m.text));
+      if (m.created_at) {
+        item.appendChild(el('div', 'memory-date', String(m.created_at).slice(0, 10)));
+      }
+      box.appendChild(item);
+    }
+  } catch (_) {
+    box.textContent = '';
+    box.appendChild(el('div', 'side-empty', 'Could not load memories.'));
+  }
+}
+
+async function loadStatus() {
+  try {
+    const res = await fetch('/api/status');
+    const data = await res.json();
+    if (data.ok) {
+      $('dot').classList.add('online');
+      $('backend').textContent = data.memory_backend + ' · ' + data.llm;
+      $('backend').title = data.memory;
+
+      if (data.demo_mode) {
+        demoMode = true;
+        // Reuse the token across reloads so "close the tab and come back"
+        // still demonstrates persistence for the same visitor.
+        try {
+          visitorId = localStorage.getItem('agent-memory-visitor');
+        } catch (_) {}
+        if (!visitorId) {
+          visitorId = data.visitor_id;
+          try { localStorage.setItem('agent-memory-visitor', visitorId); } catch (_) {}
+        }
+        $('user-field').hidden = true;
+        $('demo-note').hidden = false;
+      }
+    } else {
+      $('backend').textContent = 'not configured';
+      $('backend').title = data.error || '';
+    }
+  } catch (_) {
+    $('backend').textContent = 'server unreachable';
+  }
+}
+
+/* Two-step confirm, rather than a modal: the first click arms the button and
+   the second performs the deletion. Reverts after a few seconds. */
+let armed = false;
+let armedTimer = null;
+$('forget').addEventListener('click', async () => {
+  const btn = $('forget');
+  if (!armed) {
+    armed = true;
+    btn.classList.add('armed');
+    btn.textContent = 'Click again to confirm';
+    armedTimer = setTimeout(() => {
+      armed = false;
+      btn.classList.remove('armed');
+      btn.textContent = 'Forget everything';
+    }, 4000);
+    return;
+  }
+  clearTimeout(armedTimer);
+  armed = false;
+  btn.classList.remove('armed');
+  btn.textContent = 'Forget everything';
+  await fetch('/api/forget', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ user_id: userId() }),
+  });
+  loadMemories();
+});
+
+/* ----------------------------------------------------------------------- wiring */
+
+$('send').addEventListener('click', send);
+
+$('input').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    send();
+  }
+});
+
+$('input').addEventListener('input', (e) => {
+  e.target.style.height = 'auto';
+  e.target.style.height = Math.min(e.target.scrollHeight, 180) + 'px';
+});
+
+$('user').addEventListener('change', () => {
+  try { localStorage.setItem('agent-memory-user', userId()); } catch (_) {}
+  loadMemories();
+});
+
+function setDrawer(open) {
+  $('sidebar').classList.toggle('open', open);
+  $('scrim').classList.toggle('open', open);
+  $('drawer-toggle').setAttribute('aria-expanded', String(open));
+}
+$('drawer-toggle').addEventListener('click', () => {
+  setDrawer(!$('sidebar').classList.contains('open'));
+});
+$('scrim').addEventListener('click', () => setDrawer(false));
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') setDrawer(false);
+});
+
+// Memories can only be fetched once the scope is known, which in demo mode
+// means waiting for the server to issue a token.
+loadStatus().then(loadMemories);
+</script>
+</body>
+</html>

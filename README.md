@@ -58,6 +58,15 @@ python seed_memories.py           # 2. does the memory pipeline work end to end?
 python chat.py                    # 3. talk to it
 ```
 
+There are two front ends. The terminal one above, and a web UI:
+
+```bash
+python server.py                  # then open http://127.0.0.1:8000
+```
+
+Both call the same `agent.run_turn()`, so they cannot drift apart. Run one at a
+time — see [Concurrency](#concurrency-and-when-you-need-docker) for why.
+
 Requires Python 3.11+.
 
 `check_setup.py` makes one real API call, so a typo in your key fails here with
@@ -349,17 +358,26 @@ quota. It covers the logic that is easy to break and expensive to debug:
 ```
 config.py          every provider, model and path. The only file reading env vars.
 memory_store.py    the only file that imports mem0. recall/remember/all_memories/forget_all
+agent.py           one turn of conversation, shared by both front ends
 llm.py             the reply model (gemini or ollama)
 retry.py           exponential backoff, 429 classification
-chat.py            the loop, debug output, /commands
+chat.py            terminal front end: the loop, debug output, /commands
+server.py          web front end: FastAPI wrapper around agent.run_turn()
+index.html         the web UI
 check_setup.py     stage 1 verification
 seed_memories.py   stage 2 verification
 tests/             offline test suite (no key, no network)
 docker-compose.yml optional real Qdrant server
 ```
 
-`chat.py` never imports mem0. It only calls `memory_store`, so the memory layer
-can move behind an HTTP API without the loop changing.
+Neither front end imports mem0. Both call `agent.run_turn()`, which calls
+`memory_store` — so the memory implementation can change without either UI
+noticing, and the two UIs cannot drift apart.
+
+The web UI mirrors the terminal's debug output: a drawer under each reply,
+collapsed by default, headed with a summary like `2 recalled · 1 update`.
+Open it and a superseded fact appears struck through directly above what
+replaced it.
 
 ---
 
@@ -454,10 +472,10 @@ everything again". `config.py` sets it explicitly.
 
 Roughly in order of value:
 
-1. **Put it behind a web API.** The layering already supports it: `chat.py`
-   never imports mem0, and `memory_store` never prints — it returns dataclasses
-   and takes a notifier callback. Wrap the four functions in FastAPI. Switch to
-   the Docker Qdrant first, or the file lock will stop your second worker.
+1. **Run both front ends at once.** Local Qdrant's file lock currently allows
+   only one process, so `chat.py` and `server.py` cannot both run. `docker
+   compose up -d` plus `QDRANT_HOST=localhost` fixes it — the code needs no
+   change.
 2. **Show *why* a memory was recalled.** You have the cosine scores already.
    Surfacing near-misses just below the cut-off teaches you a lot about where
    `RECALL_LIMIT` and the score threshold should sit.
