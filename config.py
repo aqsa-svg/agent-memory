@@ -11,6 +11,7 @@ your CPU, and Qdrant local mode is just a folder on disk.
 from __future__ import annotations
 
 import os
+import tempfile
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -82,6 +83,21 @@ def _env_int(name: str, default: int) -> int:
 def _env_bool(name: str, default: bool) -> bool:
     truthy = {"1", "true", "yes", "on"}
     return _env_str(name, "true" if default else "false").lower() in truthy
+
+
+def _writable_default(preferred: Path) -> Path:
+    """Fall back to the temp directory when the project root is read-only.
+
+    Serverless filesystems are read-only apart from /tmp, and mem0 opens its
+    SQLite history file for writing on startup. Without this the whole app
+    fails to boot there, for a file nobody deployed cares about.
+    """
+    try:
+        if os.access(preferred.parent, os.W_OK):
+            return preferred
+    except Exception:  # noqa: BLE001
+        pass
+    return Path(tempfile.gettempdir()) / preferred.name
 
 
 def _env_path(name: str, default: Path) -> Path:
@@ -232,7 +248,9 @@ def get_settings() -> Settings:
         qdrant_path=_env_path("QDRANT_PATH", PROJECT_ROOT / "qdrant_data"),
         qdrant_host=_env_str("QDRANT_HOST", ""),
         qdrant_port=_env_int("QDRANT_PORT", 6333),
-        history_db_path=_env_path("HISTORY_DB_PATH", PROJECT_ROOT / "mem0_history.db"),
+        history_db_path=_env_path(
+            "HISTORY_DB_PATH", _writable_default(PROJECT_ROOT / "mem0_history.db")
+        ),
         recall_limit=_env_int("RECALL_LIMIT", 5),
         debug=_env_bool("DEBUG", True),
         max_retries=_env_int("MAX_RETRIES", 5),

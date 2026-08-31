@@ -24,7 +24,9 @@ from __future__ import annotations
 import atexit
 import logging
 import os
+import tempfile
 import time
+from pathlib import Path
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Any, Callable, Iterator
@@ -57,6 +59,20 @@ for silent in ("posthog", "urllib3"):
 # requests are a surprise nobody asked for.
 os.environ.setdefault("MEM0_TELEMETRY", "False")
 os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
+
+# mem0/memory/setup.py runs os.makedirs("~/.mem0") at IMPORT time, before any
+# of its classes are constructed. On a serverless host the home directory is
+# read-only and that import raises OSError(30), so `from mem0 import ...` fails
+# outright. Everything except /tmp is read-only there, so point mem0 at the
+# temp directory whenever home is not writable. Set before mem0 is imported -
+# which it never is at module scope, precisely so this runs first.
+if not os.environ.get("MEM0_DIR"):
+    try:
+        _home_writable = os.access(Path.home(), os.W_OK)
+    except Exception:  # noqa: BLE001 - some sandboxes cannot even resolve home
+        _home_writable = False
+    if not _home_writable:
+        os.environ["MEM0_DIR"] = str(Path(tempfile.gettempdir()) / ".mem0")
 
 # Windows without Developer Mode cannot make symlinks, so huggingface_hub
 # prints a paragraph about it on every cold start. Caching still works.
