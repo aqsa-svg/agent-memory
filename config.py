@@ -41,17 +41,22 @@ MemoryBackend = Literal["cloud", "oss"]
 # OpenAI-based tutorial to a local embedder.
 EMBEDDING_DIMS = 384
 
-# Gemini's text-embedding-004 returns 768-dim vectors. Used for deployments,
-# where shipping torch + a 90MB model into a serverless function is not worth
-# it: the API call is free on the same key and starts instantly.
+# gemini-embedding-001 lets you choose the vector width; we ask for 768 to keep
+# collections a sensible size. Used for deployments, where shipping torch and a
+# 90MB checkpoint into a serverless function is not worth it - the API call is
+# free on the same key and starts instantly.
+#
+# Note the older text-embedding-004 is NOT available on current free keys; it
+# 404s on embedContent. Check with `python check_setup.py --list-models`.
 GEMINI_EMBEDDING_DIMS = 768
+GEMINI_EMBEDDING_MODEL = "models/gemini-embedding-001"
 
 # A Qdrant collection's vector size is fixed at creation, so the two embedders
 # cannot share one. Switching EMBEDDER_PROVIDER means switching
 # QDRANT_COLLECTION too, or every insert fails.
 EMBEDDER_DEFAULTS = {
     "huggingface": ("sentence-transformers/all-MiniLM-L6-v2", EMBEDDING_DIMS),
-    "gemini": ("models/text-embedding-004", GEMINI_EMBEDDING_DIMS),
+    "gemini": (GEMINI_EMBEDDING_MODEL, GEMINI_EMBEDDING_DIMS),
 }
 
 
@@ -288,8 +293,11 @@ def validate(settings: Settings) -> None:
     expected = None
     if "MiniLM-L6" in settings.embedding_model:
         expected = EMBEDDING_DIMS
-    elif "text-embedding-004" in settings.embedding_model:
-        expected = GEMINI_EMBEDDING_DIMS
+    elif "gemini-embedding" in settings.embedding_model:
+        # This model accepts any width between 128 and 3072, so there is no one
+        # correct answer - only a requirement that the number here matches what
+        # the collection was built with. Nothing to assert.
+        expected = None
     if expected is not None and settings.embedding_dims != expected:
         raise ConfigError(
             f"EMBEDDING_DIMS={settings.embedding_dims} but {settings.embedding_model} "
@@ -304,7 +312,7 @@ def validate(settings: Settings) -> None:
         raise ConfigError(
             f"EMBEDDER_PROVIDER=gemini but EMBEDDING_MODEL is "
             f"{settings.embedding_model!r}, which is a local checkpoint.\n"
-            f"  Set EMBEDDING_MODEL=models/text-embedding-004 and "
+            f"  Set EMBEDDING_MODEL={GEMINI_EMBEDDING_MODEL} and "
             f"EMBEDDING_DIMS={GEMINI_EMBEDDING_DIMS}, or remove both to use the "
             f"provider default."
         )
